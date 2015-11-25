@@ -9,8 +9,30 @@ from pyparsing import ParseResults
 
 bops       = {'<', '<=', '>', '>=', '='}
 
+class Code(list):
+    def __init__(self):
+        super(Code, self).__init__()
+
+        self._ind = 0
+
+    def indent(self):
+        self._ind += 4
+        for s in self:
+            if isinstance(s, Code):
+                s.indent()
+
+        return self
+
+    def append(self, i):
+        super(Code, self).append(i)
+
+    def __str__(self):
+        ind = self._ind * ' '
+        return '\n'.join((str(s) if isinstance(s, Code) else (ind + s)) for s in self)
+
 class LangComp(object):
-    pass
+    def generate(self, table):
+        pass
 
 class Expression(LangComp):
     def __init__(self, str_, loc, toks):
@@ -18,6 +40,13 @@ class Expression(LangComp):
             self._cont = toks[0]
         else:
             self._cont = tuple(x for x in toks[0])
+
+    @property
+    def type(self):
+        return None
+
+    def generate(self, table):
+        return (str(self), {})
 
     def __repr__(self):
         return "<Exp {}>".format(str(self))
@@ -35,11 +64,57 @@ class IfSentence(LangComp):
         self._else = None
 
 class Use(LangComp):
+    'usar "FooBar"'
     def __init__(self, str_, loc, toks):
         self._name = toks[0][1:-1].strip()
 
     def __repr__(self):
         return "<Use {!r}>".format(self._name)
+
+class While(LangComp):
+    "mientras <bool> hacer <bloque> fin"
+    def __init__(self, str_, loc, toks):
+        self._cond = toks[0][0]
+        self._body = toks[0][1]
+
+    def generate(self, table):
+        table = table.copy()
+        collect = Code()
+        collect.append('while ({}) {{'.format(str(self._cond)))
+        code, exports = self._body.generate(table)
+        collect.append(code.indent())
+        collect.append('}')
+
+        return (collect, {})
+
+class Assign(LangComp):
+    "ident <- expr"
+    def __init__(self, str_, loc, toks):
+        self._var = toks[0][0]
+        self._exp = toks[0][1]
+
+    def generate(self, table):
+        exp_code, exports = self._exp.generate(table.copy())
+        exports.update({'__assign__': self._var})
+        code = Code()
+        code.append("{} = {};".format(self._var, exp_code))
+
+        return (code, exports)
+
+class Return(LangComp):
+    def __init__(self, str_, loc, toks):
+        self._exp = toks[0][0]
+        self._type = None
+
+    def generate(self, table):
+        self._exp.generate(table.copy())
+        self._type = self._exp.type
+        code = Code()
+        code.append("return {};".format(self._exp))
+        return (code, {})
+
+    def __repr__(self):
+        return "<Ret {}>".format(self._exp)
 
 class FuncAppl(LangComp):
     def __init__(self, str_, loc, toks):
@@ -56,9 +131,58 @@ class FuncAppl(LangComp):
             s = self._args
         return "{}({})".format(self._name, s)
 
+class Block(LangComp):
+    def __init__(self, str_, loc, toks):
+        self._toks = toks[0]
+
+    def generate(self, table):
+        table = table.copy()
+        exports = {}
+        collect = Code()
+        # TODO: ...
+        for t in self._toks:
+            code, exports = t.generate(table)
+            collect.append(code)
+
+        return (collect, exports)
+
+class FuncDef(LangComp):
+    def __init__(self, str_, loc, toks):
+        self._name = toks[0][0]
+        self._args = toks[0][1]
+        self._body = toks[0][2]
+
+    def __repr__(self):
+        return '<Fun {}({})>'.format(self._name, ', '.join(self._args))
+
+    @property
+    def name(self):
+        return str(self._name)
+
+    def generate(self, table):
+        table = table.copy()
+        code = Code()
+        code.append('<type> {} ({}) {{'.format(self.name, ', '.join('<type> {}'.format(a) for a in self._args)))
+        block_code, exports = self._body.generate(table)
+        code.append(block_code.indent())
+        code.append('}')
+
+        print(code)
+
 class Program(LangComp):
     def __init__(self, str_, loc, toks):
-        pass
+        self._toks = toks
+
+    def generate(self):
+        table = {}
+        for t in self._toks:
+            try:
+                table[t.name] = t
+            except AttributeError:
+                pass
+
+        for t in self._toks:
+            t.generate(table)
 
 """
 coment     ::= '#' ......
@@ -80,36 +204,36 @@ kwlist = (
     'hacer', 'inicio', 'fin'
 )
 
-keyword    = MatchFirst(map(Keyword, kwlist))
+keyword     = MatchFirst(map(Keyword, kwlist))
 
-boolops    = oneOf(list(bops))
-plusorminus= oneOf('+ -')
-pmops      = oneOf('+ -')
-mdops      = oneOf('* / //')
-point      = Literal('.')
-e          = oneOf('e E')
+boolops     = oneOf(list(bops))
+plusorminus = oneOf('+ -')
+pmops       = oneOf('+ -')
+mdops       = oneOf('* / //')
+point       = Literal('.')
+e           = oneOf('e E')
 
-lb         = Suppress(Literal('('))
-rb         = Suppress(Literal(')'))
-SK         = lambda k: Suppress(Keyword(k))
+lb          = Suppress(Literal('('))
+rb          = Suppress(Literal(')'))
+SK          = lambda k: Suppress(Keyword(k))
 
-ident      = ~keyword + Word(initChars = alphas + '+', bodyChars = alphanums + '_')
-idents     = delimitedList(ident, delim=',')
+ident       = (~keyword + Word(initChars = alphas + '+', bodyChars = alphanums + '_'))("ident")
+idents      = delimitedList(ident, delim=',')
 
-expr       = Forward()
-number     = Word(nums)
-integercst = Combine(Optional(plusorminus) + number)
-integer    = integercst.setParseAction(lambda t: int(t[0]))
-floatp     = Combine(integercst +
+expr        = Forward()
+number      = Word(nums)
+integercst  = Combine(Optional(plusorminus) + number)
+integer     = integercst.setParseAction(lambda t: int(t[0]))
+floatp      = Combine(integercst +
                       Optional( point + Optional(number) ) +
                       Optional( e + integercst ) ).setParseAction(lambda t: float(t[0]))
-const_dict = {'Cierto': True, 'Falso': False}
-const      = oneOf('Cierto Falso').setParseAction(lambda t: const_dict[t[0]])
+const_dict  = {'Cierto': True, 'Falso': False}
+const       = oneOf('Cierto Falso').setParseAction(lambda t: const_dict[t[0]])
 
-expressions= delimitedList(expr, delim=',')
-aplfn      = Group(ident + lb + expressions + rb).setParseAction(FuncAppl)
+expressions = delimitedList(expr, delim=',')
+aplfn       = Group(ident + lb + expressions + rb).setParseAction(FuncAppl)
 
-parenexp   = (lb + expr + rb).setParseAction(lambda t: t[0])
+parenexp    = (lb + expr + rb).setParseAction(lambda t: t[0])
 expr       << operatorPrecedence(
                     aplfn|integer|floatp|const|ident|parenexp,
                     [ (mdops, 2, opAssoc.LEFT),
@@ -117,25 +241,25 @@ expr       << operatorPrecedence(
                       (boolops, 2, opAssoc.LEFT) ]
               ).setParseAction(Expression)
 
-bloque     = Forward() # we need this to make a recursive block
-bloque_hac = Forward()
+bloque      = Forward() # we need this to make a recursive block
+bloque_hac  = Forward()
 
-para       = SK('para') + ident + (lb + expressions + rb | ident) + bloque_hac
-mientras   = SK('mientras') + expr + bloque_hac
-devolver   = SK('devolver') + expr
-cond       = SK('si') + parenexp + SK('entonces') + bloque + Optional(SK('sino') + bloque) + SK('fin')
-asign      = ident + Suppress(Literal('<-')) + expr
+para        = Group(SK('para') + ident + (lb + expressions + rb | ident) + bloque_hac)
+mientras    = Group(SK('mientras') + expr + bloque_hac).setParseAction(While)
+devolver    = Group(SK('devolver') + expr).setParseAction(Return)
+cond        = Group(SK('si') + parenexp + SK('entonces') + bloque + Optional(SK('sino') + bloque) + SK('fin'))
+asign       = Group(ident + Suppress(Literal('<-')) + expr).setParseAction(Assign)
 
-bloque_ini = SK('inicio') + bloque + SK('fin')
+bloque_ini  = SK('inicio') + bloque + SK('fin')
 bloque_hac << SK('hacer') + bloque + SK('fin')
-bloque     << OneOrMore(para | mientras | devolver | cond | asign)
+bloque     << Group(OneOrMore(para | mientras | devolver | cond | asign)).setParseAction(Block)
 
-usar       = SK('usar') + quotedString.setParseAction(Use)
+usar        = SK('usar') + quotedString.setParseAction(Use)
 
-func_sig   = ident.setName('func_name') + Optional(lb + idents.setName('func_params') + rb)
-def_func   = SK('funcion') + func_sig + bloque_ini.setName('func_block')
+func_sig    = ident + Group(Optional(lb + idents + rb))
+def_func    = Group(SK('funcion') + func_sig + bloque_ini).setParseAction(FuncDef)
 
-programa   = OneOrMore(usar | def_func).setParseAction(Program)
+programa    = OneOrMore(usar | def_func).setParseAction(Program)
 
 ejemplo = """
 usar "SD"
@@ -146,10 +270,10 @@ inicio
   devolver n + 1
 fin
 
-funcion foo ( a, bar, baz )
+funcion foo (a, bar, baz)
 inicio
   b <- 0
-  mientras ( b < 1 ) hacer
+  mientras b < 1 hacer
     b <- add1(b) * ( 1+2 )
   fin
 
@@ -157,4 +281,6 @@ inicio
 fin
 """
 
-print (programa.parseString(ejemplo, parseAll=True))
+prog = programa.parseString(ejemplo, parseAll=True)
+
+prog[0].generate()
