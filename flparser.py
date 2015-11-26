@@ -9,11 +9,35 @@ from pyparsing import alphas, alphanums, nums, quotedString
 from pyparsing import delimitedList, oneOf, operatorPrecedence, opAssoc
 from pyparsing import ParseResults
 
-bops       = {'<', '<=', '>', '>=', '='}
+from collections import defaultdict
+
+bops         = {'<', '<=', '>', '>=', '='}
+
+# The entry points are functions that are never invoked explicitly, like
+# 'main' in C or 'setup' and 'loop' for Arduino. We need to keep track
+# of them, because we don't generate code for other non-invoked functions
+entry_points = {'preparacion', 'bucle_central'}
 
 def abort(msg):
     print(msg)
     sys.exit(-1)
+
+class Attribs(dict):
+    def __getitem__(self, key):
+        try:
+            return super(Attribs, self).__getitem__(key)
+        except KeyError:
+            new = []
+            self[key] = new
+
+            return new
+
+    def update(self, d):
+        for (k, v) in d.items():
+            self[k].extend(v)
+
+    def copy(self):
+        return Attribs(super(Attribs, self).copy())
 
 class Code(list):
     def __init__(self, *args):
@@ -32,6 +56,8 @@ class Code(list):
     def append(self, i):
         super(Code, self).append(i)
 
+        return self
+
     def __add__(self, other):
         c = Code(list(self) + list(other))
         c._ind = max(self._ind, other._ind)
@@ -46,9 +72,19 @@ def safe_generate(obj, table):
     try:
         return obj.generate(table)
     except AttributeError:
-        return (Code(), {})
+        return Code()
+
+def safe_get_attrs(obj):
+    try:
+        return obj.attributes
+    except AttributeError:
+        return Attribs()
 
 class LangComp(object):
+    @property
+    def attributes(self):
+        return self._attr.copy()
+
     @property
     def type(self):
         return self._type
@@ -58,7 +94,7 @@ class LangComp(object):
         return self._name
 
     def generate(self, table):
-        pass
+        return Code()
 
 def get_c_type(exp):
     return {
@@ -93,8 +129,11 @@ def coerce_types(t1, t2):
 
 class Ident(LangComp):
     def __init__(self, str_, loc, toks):
+        super(Ident, self).__init__()
+
         self._name = toks[0]
         self._type = None
+        self._attr = Attribs()
 
     def __repr__(self):
         return "<Ident {}>".format(self.name)
@@ -104,23 +143,22 @@ class Ident(LangComp):
 
 class Expression(LangComp):
     def __init__(self, str_, loc, toks):
-        if isinstance(toks[0], (LangComp, int, float)):
-            self._cont = toks[0]
+        t = toks[0]
+
+        if isinstance(t, (LangComp, int, float)):
+            self._cont = t
             self._type = get_type(self._cont)
+            self._attr = safe_get_attrs(t)
         else:
-            self._cont = tuple(x for x in toks[0])
+            self._cont = tuple(x for x in t)
             # This assumes an infix operand of 2-arity
             t1, t2 = get_type(self._cont[0]), get_type(self._cont[2])
             self._type = coerce_types(t1, t2)
+            self._attr = safe_get_attrs(t1)
+            self._attr.update(safe_get_attrs(t2))
 
     def generate(self, table):
-        if isinstance(self._cont, (list, tuple)):
-            safe_generate(self._cont[0], table)
-            safe_generate(self._cont[2], table)
-        else:
-            safe_generate(self._cont, table)
-
-        return (str(self), {})
+        return Code([str(self)])
 
     def __repr__(self):
         return "<Exp {}>".format(str(self))
@@ -136,11 +174,13 @@ class IfSentence(LangComp):
         self._cond = None
         self._then = None
         self._else = None
+        self._attr = Attribs()
 
 class Use(LangComp):
     'usar "FooBar"'
     def __init__(self, str_, loc, toks):
         self._name = toks[0][1:-1].strip()
+        self._attr = Attribs({'expose': [self]})
 
     def __repr__(self):
         return "<Use {!r}>".format(self._name)
@@ -151,15 +191,18 @@ class While(LangComp):
         self._cond = toks[0][0]
         self._body = toks[0][1]
 
+        self._attr = self._cond.attributes
+        self._attr.update(self._body.attributes)
+
     def generate(self, table):
         table = table.copy()
         collect = Code()
         collect.append('while ({}) {{'.format(str(self._cond)))
-        code, exports = self._body.generate(table)
+        code = self._body.generate(table)
         collect.append(code.indent())
         collect.append('}')
 
-        return (collect, {})
+        return collect
 
 class Assign(LangComp):
     "ident <- expr"
@@ -167,35 +210,32 @@ class Assign(LangComp):
         self._var = toks[0][0]
         self._exp = toks[0][1]
         self._type = None
+        self._attr = self._exp.attributes
+        self._attr.update({'assign': [self._var]})
 
     @property
     def name(self):
         return self._var.name
 
     def generate(self, table):
-        exp_code, exports = self._exp.generate(table.copy())
+        exp_code = self._exp.generate(table.copy())
         if self._var.name not in table:
             self._var._type = self._exp.type
         else:
             self._var._type = coerce_types(self._type, self._exp.type)
 
-        exports.update({'__assign__': self._var})
-        code = Code()
-        code.append("{} = {};".format(self._var, exp_code))
-
-        return (code, exports)
+        return Code().append("{} = {};".format(self._var, exp_code))
 
 class Return(LangComp):
     def __init__(self, str_, loc, toks):
         self._exp = toks[0][0]
         self._type = None
+        self._attr = self._exp.attributes
 
     def generate(self, table):
         self._exp.generate(table.copy())
         self._type = self._exp.type
-        code = Code()
-        code.append("return {};".format(self._exp))
-        return (code, {})
+        return Code().append("return {};".format(self._exp))
 
     def __repr__(self):
         return "<Ret {}>".format(self._exp)
@@ -205,6 +245,10 @@ class FuncAppl(LangComp):
         self._var = toks[0][0]
         self._args = toks[0][1]
         self._type = None
+        self._attr = Attribs()
+        for a in self._args:
+            self._attr.update(safe_get_attrs(a.attributes))
+        self._attr['call'].append(self)
 
     @property
     def name(self):
@@ -227,23 +271,31 @@ class FuncAppl(LangComp):
 class Block(LangComp):
     def __init__(self, str_, loc, toks):
         self._toks = toks[0]
+        self._attr = Attribs()
+
+        for t in self._toks:
+            self._attr.update(t.attributes)
 
     def generate(self, table):
         table = table.copy()
         exports = {}
         collect = Code()
 
-        defs = Code()
+        defer_defs = []
+        for t in self.attributes['assign']:
+            if t.name not in table:
+                table[t.name] = t
+                defer_defs.append(t)
 
         for t in self._toks:
-            code, exports = t.generate(table)
+            code = t.generate(table)
             collect.append(code)
-            for (k, v) in exports.items():
-                if k == '__assign__' and v.name not in table:
-                    defs.append('{} {};'.format(get_c_type(v.type), v.name))
-                    table[v.name] = v
 
-        return (defs + collect, exports)
+        defs = Code()
+        for t in defer_defs:
+            defs.append('{} {};'.format(get_c_type(t.type), t.name))
+
+        return defs + collect
 
 class FuncDef(LangComp):
     def __init__(self, str_, loc, toks):
@@ -251,6 +303,7 @@ class FuncDef(LangComp):
         self._args  = toks[0][1]
         self._body  = toks[0][2]
         self._type  = None
+        self._attr  = {}
 
     def __repr__(self):
         return '<Fun {}({})>'.format(self.name, ', '.join(a.name for a in self._args))
@@ -264,7 +317,7 @@ class FuncDef(LangComp):
         table.update(dict((a.name, a) for a in self._args))
         code = Code()
         code.append('{} {} ({}) {{'.format(get_c_type(self.type), self.name, ', '.join('{} {}'.format(get_c_type(a.type), a) for a in self._args)))
-        block_code, exports = self._body.generate(table)
+        block_code = self._body.generate(table)
         code.append(block_code.indent())
         code.append('}')
 
@@ -302,7 +355,7 @@ sentencia  ::= para | mientras | devolver | cond | bloque-ini
 kwlist = (
     'usar', 'funcion', 'para', 'mientras',
     'devolver', 'si', 'entonces', 'sino',
-    'hacer', 'inicio', 'fin'
+    'hacer', 'inicio', 'fin', 'Cierto', 'Falso'
 )
 
 keyword     = MatchFirst(map(Keyword, kwlist))
@@ -318,10 +371,10 @@ lb          = Suppress(Literal('('))
 rb          = Suppress(Literal(')'))
 SK          = lambda k: Suppress(Keyword(k))
 
-ident       = (~keyword + Word(initChars = alphas + '+', bodyChars = alphanums + '_')).setName("ident").setParseAction(Ident)
+ident       = (~keyword + Word(initChars = alphas + '+', bodyChars = alphanums + '_')).setParseAction(Ident)
 idents      = delimitedList(ident, delim=',')
 
-expr        = Forward().setName('expr')
+expr        = Forward()
 number      = Word(nums)
 integercst  = Combine(Optional(plusorminus) + number)
 integer     = integercst.setParseAction(lambda t: int(t[0]))
@@ -331,7 +384,7 @@ floatp      = Combine(integercst +
 const_dict  = {'Cierto': True, 'Falso': False}
 const       = oneOf('Cierto Falso').setParseAction(lambda t: const_dict[t[0]])
 
-expressions = delimitedList(expr, delim=',')
+expressions = Group(delimitedList(expr, delim=','))
 aplfn       = Group(ident + lb + expressions + rb).setParseAction(FuncAppl)
 
 parenexp    = (lb + expr + rb).setParseAction(lambda t: t[0])
