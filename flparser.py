@@ -62,6 +62,12 @@ class Code(list):
         super(Code, self).__init__(*args)
 
         self._ind = 0
+        self._delim = '\n'
+
+    def set_delim(self, d):
+        self._delim = d
+
+        return self
 
     def indent(self):
         self._ind += 4
@@ -79,18 +85,19 @@ class Code(list):
     def __add__(self, other):
         c = Code(list(self) + list(other))
         c._ind = max(self._ind, other._ind)
+        c._delim = self._delim
 
         return c
 
     def __str__(self):
         ind = self._ind * ' '
-        return '\n'.join((str(s) if isinstance(s, Code) else (ind + s)) for s in self)
+        return self._delim.join((str(s) if isinstance(s, Code) else (ind + s)) for s in self)
 
-def safe_generate(obj, table):
+def safe_generate(obj, table, verb = False, delim='\n'):
     try:
         return obj.generate(table)
     except AttributeError:
-        return Code()
+        return (Code() if not verb else Code([str(obj)])).set_delim(delim)
 
 def safe_get_attrs(obj):
     try:
@@ -118,6 +125,7 @@ def get_c_type(exp):
     return {
         'integer': 'int',
         'float'  : 'float',
+        'boolean': 'bool',
         None     : '<UNKNOWN>'
     }[exp]
 
@@ -126,6 +134,10 @@ def get_type(exp):
         return 'integer'
     elif type(exp) == float:
         return 'float'
+    elif type(exp) == bool:
+        return 'boolean'
+    elif type(exp) == str:
+        return 'string'
     else:
         try:
             return exp.type
@@ -165,11 +177,27 @@ class Arbitrary(LangComp):
     def generate(self, table):
         return Code([self._txt])
 
+class LiteralElement(LangComp):
+    def __init__(self, str_, loc, toks):
+        t = toks[0]
+        self._cont = t
+        self._type = get_type(t)
+        self._attr = Attribs()
+
+    def generate(self, table):
+        return Code([str(self)]).set_delim(' ')
+
+    def __str__(self):
+        return str(self._cont)
+
 class Ident(LangComp):
     def __init__(self, str_, loc, toks):
         self._name = toks[0]
         self._type = None
         self._attr = Attribs()
+
+    def generate(self, table):
+        return Code([varGen.userIdent(self.name)]).set_delim(' ')
 
     def __repr__(self):
         return "<Ident {}>".format(self.name)
@@ -194,7 +222,10 @@ class Expression(LangComp):
             self._attr.update(safe_get_attrs(t2))
 
     def generate(self, table):
-        return Code([str(self)])
+        try:
+            return sum([safe_generate(c, table, verb=True, delim=' ') for c in self._cont], Code().set_delim(' '))
+        except TypeError:
+            return self._cont.generate(table).set_delim(' ')
 
     def __repr__(self):
         return "<Exp {}>".format(str(self))
@@ -271,7 +302,7 @@ class While(LangComp):
     def generate(self, table):
         table = table.copy()
         collect = Code()
-        collect.append('while ({})'.format(str(self._cond)))
+        collect.append('while ({})'.format(str(self._cond.generate(table))))
         code = self._body.generate(table)
         collect.append(code)
 
@@ -297,7 +328,7 @@ class Assign(LangComp):
         else:
             self._var._type = coerce_types(self._type, self._exp.type)
 
-        return Code().append("{} = {};".format(self._var, exp_code))
+        return Code().append("{} = {};".format(self._var.generate(table), exp_code))
 
 class Return(LangComp):
     def __init__(self, str_, loc, toks):
@@ -308,7 +339,7 @@ class Return(LangComp):
     def generate(self, table):
         self._exp.generate(table.copy())
         self._type = self._exp.type
-        return Code().append("return {};".format(self._exp))
+        return Code().append("return {};".format(self._exp.generate(table)))
 
     def __repr__(self):
         return "<Ret {}>".format(self._exp)
@@ -368,7 +399,7 @@ class Block(LangComp):
 
         defs = Code()
         for t in defer_defs:
-            defs.append('{} {};'.format(get_c_type(t.type), t.name))
+            defs.append('{} {};'.format(get_c_type(t.type), t.generate(table)))
 
         final = defs + collect
 
@@ -396,7 +427,7 @@ class FuncDef(LangComp):
         table = table.copy()
         table.update(dict((a.name, a) for a in self._args))
         code = Code()
-        code.append('{} {} ({})'.format(get_c_type(self.type), self.name, ', '.join('{} {}'.format(get_c_type(a.type), a) for a in self._args)))
+        code.append('{} {} ({})'.format(get_c_type(self.type), self._fname.generate(table), ', '.join('{} {}'.format(get_c_type(a.type), a.generate(table)) for a in self._args)))
         block_code = self._body.generate(table)
         code.append(block_code)
 
@@ -456,12 +487,12 @@ idents      = delimitedList(ident, delim=',')
 expr        = Forward()
 number      = Word(nums)
 integercst  = Combine(Optional(plusorminus) + number)
-integer     = integercst.setParseAction(lambda t: int(t[0]))
+integer     = integercst.setParseAction(lambda t: int(t[0])).addParseAction(LiteralElement)
 floatp      = Combine(integercst +
                       Optional( point + Optional(number) ) +
-                      Optional( e + integercst ) ).setParseAction(lambda t: float(t[0]))
+                      Optional( e + integercst ) ).setParseAction(lambda t: float(t[0])).setParseAction(LiteralElement)
 const_dict  = {'Cierto': True, 'Falso': False}
-const       = oneOf('Cierto Falso').setParseAction(lambda t: const_dict[t[0]])
+const       = oneOf('Cierto Falso').setParseAction(lambda t: const_dict[t[0]]).addParseAction(LiteralElement)
 
 expressions = Group(delimitedList(expr, delim=',').setParseAction(Collection))
 aplfn       = Group(ident + lb + expressions + rb).setParseAction(FuncAppl)
