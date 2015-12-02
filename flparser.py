@@ -168,6 +168,9 @@ class Collection(LangComp):
     def __str__(self):
         return ', '.join(str(t) for t in self._toks)
 
+    def generate(self, table):
+        return Code([t.generate(table) for t in self._toks]).set_delim(',')
+
 class Arbitrary(LangComp):
     def __init__(self, txt, tp=None, attr=None):
         self._txt = txt
@@ -222,10 +225,11 @@ class Expression(LangComp):
             self._attr.update(safe_get_attrs(t2))
 
     def generate(self, table):
-        try:
-            return sum([safe_generate(c, table, verb=True, delim=' ') for c in self._cont], Code().set_delim(' '))
-        except TypeError:
-            return self._cont.generate(table).set_delim(' ')
+        c = self._cont
+        if isinstance(c, tuple):
+            return Code([c[0].generate(table), c[1], c[2].generate(table)]).set_delim(' ')
+        else:
+            return c.generate(table).set_delim(' ')
 
     def __repr__(self):
         return "<Exp {}>".format(str(self))
@@ -273,7 +277,7 @@ class IfSentence(LangComp):
 
     def generate(self, table):
         c = Code()
-        c.append('if {}'.format(' '.join(self._cond.generate(table))))
+        c.append('if ({})'.format(self._cond.generate(table)))
         c.append(self._then.generate(table))
         if self._else:
             c.append('else')
@@ -350,7 +354,6 @@ class FuncAppl(LangComp):
         self._var = t[0]
         c = t[1]
         self._args = c[0]
-        # print(self._args[0], self._args)
         self._type = None
         self._attr = Attribs()
         self._attr.update(safe_get_attrs(self._args))
