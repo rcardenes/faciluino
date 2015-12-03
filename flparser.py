@@ -11,6 +11,8 @@ from pyparsing import ParseResults
 
 from collections import defaultdict
 
+from functools import wraps
+
 bops         = {'<', '<=', '>', '>=', '='}
 
 # The entry points are functions that are never invoked explicitly, like
@@ -39,6 +41,80 @@ class VariableNameGenerator(object):
         return '_u_{}'.format(name)
 
 varGen = VariableNameGenerator()
+
+class Scope(object):
+    def __init__(self, higher = None):
+        self.contents = {}
+        self.higher = higher
+
+    def __getitem__(self, item):
+        try:
+            return self.contents[item]
+        except KeyError:
+            try:
+                return self.higher[item]
+            except TypeError:
+                raise KeyError("Object '{}' can't be found".format(item))
+
+    def __setitem__(self, item, value):
+        self.contents[item] = value
+
+    def __contains__(self, item):
+        try:
+            return (item in self.contents) or (item in self.higher)
+        except TypeError:
+            return False
+
+    def pop(self):
+        return self.higher
+
+def nested_scope(mth):
+    @wraps(mth)
+    def wrapper(self, table, *args, **kw):
+        table.push()
+        try:
+            return mth(self, table, *args, **kw)
+        finally:
+            table.pop()
+    return wrapper
+
+class SymbolTable(object):
+    def __init__(self):
+        self.functions = Scope()
+        self.other     = Scope()
+
+    def __contains__(self, item):
+        return item in self.other or item in self.functions
+
+    def __getitem__(self, item):
+        return self.get(item)
+
+    def __setitem__(self, item, value):
+        self.set(item, value)
+
+    def get(self, item):
+        return self.other[item]
+
+    def set(self, item, value):
+        self.other[item] = value
+
+    def getfn(self, item, signature):
+        raise NotImplementedError('SymbolTable.getfn is not implemented')
+
+    def setfn(self, item, signature, value):
+        raise NotImplementedError('SymbolTable.setfn is not implemented')
+
+    def update(self, dct):
+        for key, value in dct.items():
+            self[key] = value
+
+    def push(self):
+        self.other = Scope(self.other)
+
+    def pop(self):
+        self.other = self.other.pop()
+        if self.other is None:
+            raise RuntimeError('SymbolTable has been asked to get back beyond the highest level scope')
 
 class Attribs(dict):
     def __getitem__(self, key):
@@ -304,8 +380,8 @@ class While(LangComp):
         self._attr = self._cond.attrs
         self._attr.update(self._body.attrs)
 
+    @nested_scope
     def generate(self, table):
-        table = table.copy()
         collect = Code()
         collect.append('while ({})'.format(str(self._cond.generate(table))))
         code = self._body.generate(table)
@@ -326,8 +402,9 @@ class Assign(LangComp):
     def name(self):
         return self._var.name
 
+    @nested_scope
     def generate(self, table):
-        exp_code = self._exp.generate(table.copy())
+        exp_code = self._exp.generate(table)
         if self._var.name not in table:
             self._var._type = self._exp.type
         else:
@@ -341,8 +418,9 @@ class Return(LangComp):
         self._type = None
         self._attr = self._exp.attrs
 
+    @nested_scope
     def generate(self, table):
-        self._exp.generate(table.copy())
+        self._exp.generate(table)
         self._type = self._exp.type
         return Code().append("return {};".format(self._exp.generate(table)))
 
@@ -386,8 +464,8 @@ class Block(LangComp):
     def prepend_token(self, snt):
         self._toks = [snt] + self._toks
 
+    @nested_scope
     def generate(self, table, enclosed=True):
-        table = table.copy()
         exports = {}
         collect = Code()
 
@@ -427,8 +505,8 @@ class FuncDef(LangComp):
     def name(self):
         return str(self._fname.name)
 
+    @nested_scope
     def generate(self, table):
-        table = table.copy()
         table.update(dict((a.name, a) for a in self._args))
         block_code = self._body.generate(table)
 
@@ -453,7 +531,7 @@ class Program(LangComp):
         self._toks = toks
 
     def generate(self):
-        table = {}
+        table = SymbolTable()
         for t in self._toks:
             try:
                 table[t.name] = t
