@@ -16,7 +16,7 @@ bops         = {'<', '<=', '>', '>=', '='}
 # The entry points are functions that are never invoked explicitly, like
 # 'main' in C or 'setup' and 'loop' for Arduino. We need to keep track
 # of them, because we don't generate code for other non-invoked functions
-entry_points = {'preparacion', 'bucle_central'}
+entry_points = {'setup', 'loop'}
 
 def abort(msg):
     print(msg)
@@ -126,6 +126,7 @@ def get_c_type(exp):
         'integer': 'int',
         'float'  : 'float',
         'boolean': 'bool',
+        'void'   : 'void',
         None     : '<UNKNOWN>'
     }[exp]
 
@@ -429,9 +430,20 @@ class FuncDef(LangComp):
     def generate(self, table):
         table = table.copy()
         table.update(dict((a.name, a) for a in self._args))
-        code = Code()
-        code.append('{} {} ({})'.format(get_c_type(self.type), self._fname.generate(table), ', '.join('{} {}'.format(get_c_type(a.type), a.generate(table)) for a in self._args)))
         block_code = self._body.generate(table)
+
+        if self.name in entry_points:
+            name = self.name
+            if self._type is not None:
+                abort('{} no puede devolver valores'.format(name))
+            if len(self._args) > 0:
+                abort('{} no admite argumentos'.format(name))
+            self._type = 'void'
+        else:
+            name = self._fname.generate(table)
+
+        code = Code()
+        code.append('{} {} ({})'.format(get_c_type(self.type), name, ', '.join('{} {}'.format(get_c_type(a.type), a.generate(table)) for a in self._args)))
         code.append(block_code)
 
         print(code)
@@ -465,13 +477,13 @@ bloque     ::= sentencia+
 sentencia  ::= para | mientras | devolver | cond | bloque-ini
 """
 
-kwlist = (
+kwset = {
     'usar', 'funcion', 'para', 'mientras',
     'devolver', 'si', 'entonces', 'sino',
     'hacer', 'inicio', 'fin', 'Cierto', 'Falso'
-)
+}
 
-keyword     = MatchFirst(map(Keyword, kwlist))
+keyword     = MatchFirst(map(Keyword, kwset))
 
 boolops     = oneOf(list(bops))
 plusorminus = oneOf('+ -')
@@ -559,6 +571,11 @@ inicio
   fin
 
   devolver 2
+fin
+
+funcion preparar
+inicio
+  j <- add1(0)
 fin
 """
 
