@@ -333,7 +333,7 @@ class ForSentence(LangComp):
         iterab  = varGen.nextIterable()
         c.append('int {it}[] = {{ {lst} }};'.format(it=iterab, lst=str(self._iter)))
         c.append('for(int {cn} = 0; {cn} < (sizeof({it})/sizeof(*{it})); {cn}++)'.format(cn=counter, it=iterab))
-        self._blk.prepend_token(Arbitrary('{} = {}[{cn}];'.format(self._var.name, iterab, cn=counter)))
+        self._blk.prepend_token(Arbitrary('{} = {}[{cn}];'.format(self._var.generate(table), iterab, cn=counter)))
         c.append(self._blk.generate(table))
 
         return Code().append('{').append(c.indent()).append('}')
