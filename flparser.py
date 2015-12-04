@@ -257,6 +257,9 @@ class Arbitrary(LangComp):
     def generate(self, table):
         return Code([self._txt])
 
+    def __str__(self):
+        return self._txt
+
 class LiteralElement(LangComp):
     def __init__(self, str_, loc, toks):
         t = toks[0]
@@ -331,12 +334,17 @@ class ForSentence(LangComp):
         c = Code()
         counter = varGen.nextCounter()
         iterab  = varGen.nextIterable()
-        c.append('int {it}[] = {{ {lst} }};'.format(it=iterab, lst=str(self._iter)))
-        c.append('for(int {cn} = 0; {cn} < (sizeof({it})/sizeof(*{it})); {cn}++)'.format(cn=counter, it=iterab))
-        self._blk.prepend_token(Arbitrary('{} = {}[{cn}];'.format(self._var.generate(table), iterab, cn=counter)))
-        c.append(self._blk.generate(table))
+        cnt_expr = Arbitrary('{}[{cn}]'.format(iterab, cn=counter), tp='integer')
+        self._blk.prepend_token(Assign(None, None, [[self._var, cnt_expr]]))
+        new_block_toks = [
+            Arbitrary('int {it}[] = {{ {lst} }};'.format(it=iterab, lst=str(self._iter))),
+            Arbitrary('for(int {cn} = 0; {cn} < (sizeof({it})/sizeof(*{it})); {cn}++)'.format(cn=counter, it=iterab)),
+            self._blk
+        ]
 
-        return Code().append('{').append(c.indent()).append('}')
+        return Block(None, None, [new_block_toks]).generate(table)
+
+        # return Code().append('{').append(c.indent()).append('}')
 
 class IfSentence(LangComp):
     def __init__(self, str_, loc, toks):
