@@ -651,7 +651,7 @@ inicio
   devolver 2
 fin
 
-funcion preparar
+funcion setup
 inicio
   j <- add1(0)
 fin
