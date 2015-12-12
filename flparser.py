@@ -194,6 +194,30 @@ class LangComp(object):
     def name(self):
         return self._name
 
+    @property
+    def definitions(self):
+        return self.attrs.get('define', [])
+
+    @property
+    def func_calls(self):
+        return self.attrs.get('call', [])
+
+    def define(self, var):
+        dfn = self.definitions
+        if not isinstance(var, list):
+            dfn.append(var)
+        else:
+            dfn.extend(var)
+        self._attr['define'] = dfn
+
+    def func_call(self, fn):
+        cl = self.func_calls
+        if not isinstance(var, list):
+            cl.append(var)
+        else:
+            cl.extend(var)
+        self._attr['call'] = cl
+
     def generate(self, table):
         return Code()
 
@@ -302,10 +326,12 @@ class Expression(LangComp):
             t1, t2 = get_type(self._cont[0]), get_type(self._cont[2])
             self._type = coerce_types(t1, t2)
             self._attr = safe_get_attrs(t1)
-            self._attr.update(safe_get_attrs(t2))
 
     def generate(self, table):
         c = self._cont
+        # TODO: In here we need to figure out if any of the elements from the expression is
+        #       a function call. If it is, we need to figure out the signature, check if the
+        #       function has been generated and, if not, try to generate it.
         if isinstance(c, tuple):
             return Code([c[0].generate(table), c[1], c[2].generate(table)]).set_delim(' ')
         else:
@@ -326,9 +352,11 @@ class ForSentence(LangComp):
         self._var  = t[0]
         self._iter = t[1][0]
         self._blk  = t[2]
-        self._attr = Attribs({'assign': [self._var]})
-        self._attr.update(self._iter.attrs)
-        self._attr.update(self._blk.attrs)
+        # TODO: Fix this
+        # self._attr = Attribs({'define': [self._var]})
+        # self._attr.update(self._iter.attrs)
+        # self._attr.update(self._blk.attrs)
+        self._attr = Attribs()
 
     def generate(self, table):
         c = Code()
@@ -344,19 +372,19 @@ class ForSentence(LangComp):
 
         return Block(None, None, [new_block_toks]).generate(table)
 
-        # return Code().append('{').append(c.indent()).append('}')
-
 class IfSentence(LangComp):
     def __init__(self, str_, loc, toks):
         t = toks[0]
         self._cond = t[0]
         self._then = t[1]
         self._attr = Attribs()
-        self._attr.update(t[0].attrs)
-        self._attr.update(t[1].attrs)
+        # TODO: Fix this
+        # self._attr.update(t[0].attrs)
+        # self._attr.update(t[1].attrs)
         if len(t) == 3:
             self._else = t[2]
-            self._attr.update(t[2].attrs)
+            # TODO: Fix this
+            # self._attr.update(t[2].attrs)
         else:
             self._else = None
 
@@ -386,7 +414,8 @@ class While(LangComp):
         self._body = toks[0][1]
 
         self._attr = self._cond.attrs
-        self._attr.update(self._body.attrs)
+        # TODO: Fix this
+        # self._attr.update(self._body.attrs)
 
     @nested_scope
     def generate(self, table):
@@ -404,7 +433,7 @@ class Assign(LangComp):
         self._exp = toks[0][1]
         self._type = None
         self._attr = self._exp.attrs
-        self._attr.update({'assign': [self._var]})
+        self.define(self._var)
 
     @property
     def name(self):
@@ -443,8 +472,7 @@ class FuncAppl(LangComp):
         self._args = c[0]
         self._type = None
         self._attr = Attribs()
-        self._attr.update(safe_get_attrs(self._args))
-        self._attr['call'].append(self)
+        self.func_call(self)
 
     @property
     def name(self):
@@ -466,9 +494,6 @@ class Block(LangComp):
         self._toks = [t for t in toks[0]]
         self._attr = Attribs()
 
-        for t in self._toks:
-            self._attr.update(t.attrs)
-
     def prepend_token(self, snt):
         self._toks = [snt] + self._toks
 
@@ -478,12 +503,14 @@ class Block(LangComp):
         collect = Code()
 
         defer_defs = []
-        for t in self.attrs['assign']:
-            if t.name not in table:
-                table[t.name] = t
-                defer_defs.append(t)
 
         for t in self._toks:
+            dfn = t.definitions
+            for d in dfn:
+                if d.name not in table:
+                    table[d.name] = d
+                    defer_defs.append(d)
+
             code = t.generate(table)
             collect.append(code)
 
@@ -515,7 +542,8 @@ class FuncDef(LangComp):
 
     @nested_scope
     def generate(self, table):
-        table.update(dict((a.name, a) for a in self._args))
+        # TODO: Fix this
+        # table.update(dict((a.name, a) for a in self._args))
         block_code = self._body.generate(table)
 
         if self.name in entry_points:
