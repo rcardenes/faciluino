@@ -212,10 +212,10 @@ class LangComp(object):
 
     def func_call(self, fn):
         cl = self.func_calls
-        if not isinstance(var, list):
-            cl.append(var)
+        if not isinstance(fn, list):
+            cl.append(fn)
         else:
-            cl.extend(var)
+            cl.extend(fn)
         self._attr['call'] = cl
 
     def generate(self, table):
