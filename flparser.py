@@ -249,10 +249,8 @@ def get_type(exp):
 def coerce_types(t1, t2):
     if t1 == t2:
         return t1
-    elif t1 is None:
-        return t2
-    elif t2 is None:
-        return t1
+    elif t1 is None or t2 is None:
+        return None
     elif 'integer' in (t1, t2) and 'float' in (t1, t2):
         return 'float'
 
